@@ -131,19 +131,21 @@ with chat_col:
             # Sources
             sources = result.get("context", [])
             source_blocks = []
-
             seen = set()
-            for doc in sources[:3]:
-                filename = doc.metadata.get("source", "Document")
-                page = doc.metadata.get("page", 0) + 1
-                key = f"{filename}-{page}"
 
-                if key not in seen:
-                    source_blocks.append((filename, page))
-                    seen.add(key)
+            if sources:
+                for doc in sources[:3]:
+                    filename = doc.metadata.get("source", "Document")
+                    page = doc.metadata.get("page", 0) + 1
+                    key = f"{filename}-{page}"
 
+                    if key not in seen:
+                        source_blocks.append((filename, page))
+                        seen.add(key)
+
+            # Only show Sources if we actually have them
             if source_blocks:
-                answer += "\n\n**Sources:**\n"
+                st.markdown("**Sources:**")
                 for i, (fname, page) in enumerate(source_blocks):
                     if st.button(f"📄 {fname} — Page {page}", key=f"src_{i}"):
                         st.session_state.selected_pdf = fname
