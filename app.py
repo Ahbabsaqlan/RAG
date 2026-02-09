@@ -54,7 +54,14 @@ if process_button and uploaded_files:
                 tmp_path = tmp_file.name
 
             loader = PyPDFLoader(tmp_path)
-            docs.extend(loader.load())
+            file_docs = loader.load()
+
+            # Add filename to metadata
+            for d in file_docs:
+                d.metadata["source"] = uploaded_file.name
+
+            docs.extend(file_docs)
+
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
@@ -109,13 +116,21 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         result = retrieval_chain.invoke({"input": prompt})
         answer = result["answer"]
 
-        # Source citations
         sources = result.get("context", [])
         if sources:
             source_text = "\n\n**Sources:**\n"
-            for i, doc in enumerate(sources[:3]):
-                source_text += f"- Page {doc.metadata.get('page', 'N/A')}\n"
+            seen = set()
+
+            for doc in sources[:3]:
+                filename = doc.metadata.get("source", "Document")
+                page = doc.metadata.get("page", 0) + 1  # make page human-friendly
+                key = f"{filename}-{page}"
+
+                if key not in seen:
+                    source_text += f"• **{filename}** — Page {page}\n"
+                    seen.add(key)
             answer += source_text
+
 
         response = answer
 
