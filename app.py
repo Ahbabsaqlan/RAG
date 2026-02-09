@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import tempfile
 import fitz  # PyMuPDF
+import base64
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -55,6 +56,7 @@ if st.sidebar.button("Process Documents") and uploaded_files:
         for uploaded_file in uploaded_files:
             file_name = uploaded_file.name
 
+            # Save to temp file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(uploaded_file.read())
                 tmp_path = tmp_file.name
@@ -143,33 +145,58 @@ with chat_col:
                         source_blocks.append((filename, page))
                         seen.add(key)
 
-            # Only show Sources if we actually have them
+            response = answer
+
+            st.chat_message("assistant").markdown(response)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response}
+            )
+
+            # Show sources as buttons
             if source_blocks:
                 st.markdown("**Sources:**")
                 for i, (fname, page) in enumerate(source_blocks):
-                    if st.button(f"📄 {fname} — Page {page}", key=f"src_{i}"):
+                    if st.button(
+                        f"📄 {fname} — Page {page}",
+                        key=f"src_{i}"
+                    ):
                         st.session_state.selected_pdf = fname
                         st.session_state.selected_page = page - 1
 
-            response = answer
-
-        st.chat_message("assistant").markdown(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
 # ================= PDF VIEWER =================
 with viewer_col:
-    st.subheader("📄 Document Preview")
+    st.subheader("📄 Document Viewer")
 
     if st.session_state.selected_pdf:
-        pdf_name = st.session_state.selected_pdf
-        page_num = st.session_state.selected_page
+        selected_name = st.session_state.selected_pdf
+        pdf_path = st.session_state.pdf_files.get(selected_name)
 
-        pdf_path = st.session_state.pdf_files.get(pdf_name)
+        if pdf_path and os.path.exists(pdf_path):
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
 
-        if pdf_path:
-            doc = fitz.open(pdf_path)
-            page = doc.load_page(page_num)
-            pix = page.get_pixmap()
-            st.image(pix.tobytes(), caption=f"{pdf_name} — Page {page_num+1}")
+            base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+
+            page = st.session_state.selected_page + 1
+
+            pdf_display = f"""
+                <iframe
+                    src="data:application/pdf;base64,{base64_pdf}#page={page}"
+                    width="100%"
+                    height="700"
+                    type="application/pdf">
+                </iframe>
+            """
+
+            st.markdown(pdf_display, unsafe_allow_html=True)
+            st.caption(f"{selected_name} — Page {page}")
+
+            st.download_button(
+                "⬇ Download PDF",
+                data=pdf_bytes,
+                file_name=selected_name
+            )
+        else:
+            st.info("Selected file not available.")
     else:
         st.info("Click a source to preview the document.")
