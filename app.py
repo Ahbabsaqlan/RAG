@@ -2,7 +2,6 @@ import streamlit as st
 import os
 import tempfile
 import fitz  # PyMuPDF
-import base64
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -10,8 +9,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.chains.retrieval import create_retrieval_chain
+from langchain.chains import RetrievalQA
+
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
@@ -19,6 +18,34 @@ st.set_page_config(
     page_icon="📄",
     layout="wide"
 )
+
+# ---------------- NOTION STYLE CSS ----------------
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1200px;
+}
+.chat-message {
+    padding: 12px 16px;
+    border-radius: 10px;
+    margin-bottom: 10px;
+}
+.user-msg {
+    background-color: #f2f2f2;
+}
+.assistant-msg {
+    background-color: #ffffff;
+    border: 1px solid #e6e6e6;
+}
+.source-button button {
+    width: 100%;
+    text-align: left;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 # ---------------- SESSION STATE ----------------
 if "messages" not in st.session_state:
@@ -36,8 +63,10 @@ if "selected_pdf" not in st.session_state:
 if "selected_page" not in st.session_state:
     st.session_state.selected_page = 0
 
+
 # ---------------- API KEY ----------------
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+
 
 # ---------------- SIDEBAR ----------------
 st.sidebar.title("📂 Documents")
@@ -56,7 +85,6 @@ if st.sidebar.button("Process Documents") and uploaded_files:
         for uploaded_file in uploaded_files:
             file_name = uploaded_file.name
 
-            # Save to temp file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(uploaded_file.read())
                 tmp_path = tmp_file.name
@@ -85,23 +113,32 @@ if st.sidebar.button("Process Documents") and uploaded_files:
 
         st.sidebar.success("Documents ready!")
 
+
 # ---------------- MAIN LAYOUT ----------------
 chat_col, viewer_col = st.columns([2, 1])
+
 
 # ================= CHAT COLUMN =================
 with chat_col:
     st.title("🤖 AI Document Assistant")
 
+    # Display chat history
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        role_class = "user-msg" if msg["role"] == "user" else "assistant-msg"
+        st.markdown(
+            f"<div class='chat-message {role_class}'>{msg['content']}</div>",
+            unsafe_allow_html=True
+        )
 
+    # Chat input
     if prompt := st.chat_input("Ask something about your documents..."):
-        st.chat_message("user").markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.messages.append(
+            {"role": "user", "content": prompt}
+        )
 
         if not st.session_state.retriever:
             response = "Please upload and process documents first."
+            sources = []
         else:
             llm = ChatOpenAI(
                 model="gpt-4o-mini",
@@ -111,98 +148,91 @@ with chat_col:
 
             prompt_template = ChatPromptTemplate.from_template(
                 """
-                Answer based only on the context.
+                Answer only using the provided context.
 
                 Context:
                 {context}
 
                 Question:
-                {input}
+                {question}
                 """
             )
 
-            document_chain = create_stuff_documents_chain(llm, prompt_template)
-            retrieval_chain = create_retrieval_chain(
-                st.session_state.retriever,
-                document_chain
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=llm,
+                retriever=st.session_state.retriever,
+                return_source_documents=True,
+                chain_type_kwargs={"prompt": prompt_template}
             )
 
-            result = retrieval_chain.invoke({"input": prompt})
-            answer = result["answer"]
+            result = qa_chain({"query": prompt})
+            response = result["result"]
+            sources = result["source_documents"]
 
-            # Sources
-            sources = result.get("context", [])
-            source_blocks = []
+        # Show assistant message
+        st.markdown(
+            f"<div class='chat-message assistant-msg'>{response}</div>",
+            unsafe_allow_html=True
+        )
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": response}
+        )
+
+        # Show sources
+        if sources:
+            st.markdown("**Sources**")
+
             seen = set()
+            for i, doc in enumerate(sources[:3]):
+                filename = doc.metadata.get("source", "Document")
+                page = doc.metadata.get("page", 0) + 1
+                key = f"{filename}-{page}"
 
-            if sources:
-                for doc in sources[:3]:
-                    filename = doc.metadata.get("source", "Document")
-                    page = doc.metadata.get("page", 0) + 1
-                    key = f"{filename}-{page}"
-
-                    if key not in seen:
-                        source_blocks.append((filename, page))
-                        seen.add(key)
-
-            response = answer
-
-            st.chat_message("assistant").markdown(response)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": response}
-            )
-
-            # Show sources as buttons
-            if source_blocks:
-                st.markdown("**Sources:**")
-                for i, (fname, page) in enumerate(source_blocks):
+                if key not in seen:
                     if st.button(
-                        f"📄 {fname} — Page {page}",
+                        f"📄 {filename} — Page {page}",
                         key=f"src_{i}"
                     ):
-                        st.session_state.selected_pdf = fname
+                        st.session_state.selected_pdf = filename
                         st.session_state.selected_page = page - 1
+                    seen.add(key)
+
 
 # ================= PDF VIEWER =================
 with viewer_col:
-    st.subheader("📄 Document Viewer")
+    st.subheader("📄 Source Preview")
 
-    if st.session_state.selected_pdf:
-        selected_name = st.session_state.selected_pdf
-        pdf_path = st.session_state.pdf_files.get(selected_name)
+    if (
+        st.session_state.selected_pdf
+        and st.session_state.selected_pdf in st.session_state.pdf_files
+    ):
+        pdf_path = st.session_state.pdf_files[
+            st.session_state.selected_pdf
+        ]
+        page_num = st.session_state.selected_page
 
-        if pdf_path and os.path.exists(pdf_path):
-            try:
-                doc = fitz.open(pdf_path)
-                page_index = st.session_state.selected_page
+        try:
+            doc = fitz.open(pdf_path)
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=150)
 
-                if page_index < len(doc):
-                    page = doc.load_page(page_index)
-                    pix = page.get_pixmap(dpi=150)
+            image_bytes = pix.tobytes("png")
 
-                    img_bytes = pix.tobytes("png")
-                    st.image(img_bytes, use_container_width=True)
+            st.image(
+                image_bytes,
+                caption=f"{st.session_state.selected_pdf} — Page {page_num+1}",
+                use_container_width=True
+            )
 
-                    st.caption(
-                        f"{selected_name} — Page {page_index + 1} of {len(doc)}"
-                    )
+            with open(pdf_path, "rb") as f:
+                st.download_button(
+                    "⬇ Download PDF",
+                    data=f,
+                    file_name=st.session_state.selected_pdf
+                )
 
-                    # Download button
-                    with open(pdf_path, "rb") as f:
-                        pdf_bytes = f.read()
-
-                    st.download_button(
-                        "⬇ Download PDF",
-                        data=pdf_bytes,
-                        file_name=selected_name
-                    )
-                else:
-                    st.warning("Page not found in document.")
-
-            except Exception as e:
-                st.error(f"Preview error: {e}")
-        else:
-            st.info("Selected file not available.")
+        except:
+            st.info("Click a source to preview the page.")
     else:
-        st.info("Click a source to preview the document.")
-
+        st.info("No source selected yet.")
