@@ -104,12 +104,15 @@ with col1:
         for i, doc in enumerate(result["source_documents"]):
             source = doc.metadata["source"]
             page = doc.metadata["page"]
+            text = doc.page_content
 
             label = f"{source} — page {page}"
 
             if st.button(label, key=f"src_{i}"):
                 st.session_state.selected_source = source
                 st.session_state.selected_page = page
+                st.session_state.selected_text = text
+
 
 
 # ---------------- SOURCE PREVIEW ----------------
@@ -119,20 +122,28 @@ with col2:
     if st.session_state.selected_source:
         source = st.session_state.selected_source
         page_num = st.session_state.selected_page
+        source_text = st.session_state.get("selected_text", "")
 
         if source in st.session_state.pdf_bytes:
             pdf_bytes = st.session_state.pdf_bytes[source]
             pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
 
             page = pdf[page_num - 1]
-            pix = page.get_pixmap(dpi=150)
 
+            # Highlight text if available
+            if source_text:
+                areas = page.search_for(source_text[:200])
+                for area in areas:
+                    highlight = page.add_highlight_annot(area)
+                    highlight.update()
+
+            pix = page.get_pixmap(dpi=150)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             st.image(img, use_column_width=True)
 
             st.caption(f"{source} — page {page_num}")
-
         else:
             st.warning("Source file not found.")
     else:
         st.info("Click a source to preview.")
+
