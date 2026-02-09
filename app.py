@@ -14,6 +14,36 @@ st.set_page_config(
     page_icon="📄"
 )
 
+# ---------------- UI STYLING ----------------
+st.markdown("""
+<style>
+body {
+    background-color: #0e1117;
+}
+
+.user-bubble {
+    background: #1f6feb;
+    color: white;
+    padding: 12px 16px;
+    border-radius: 12px;
+    margin: 6px 0;
+    text-align: right;
+    max-width: 75%;
+    margin-left: auto;
+}
+
+.assistant-bubble {
+    background: #30363d;
+    color: white;
+    padding: 12px 16px;
+    border-radius: 12px;
+    margin: 6px 0;
+    text-align: left;
+    max-width: 75%;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📄 AI Document Assistant")
 
 # ---------------- SESSION STATE ----------------
@@ -29,6 +59,8 @@ if "selected_source" not in st.session_state:
 if "selected_page" not in st.session_state:
     st.session_state.selected_page = None
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
@@ -39,6 +71,14 @@ with st.sidebar:
         type=["pdf"],
         accept_multiple_files=True
     )
+
+    if uploaded_files:
+        for file in uploaded_files:
+            st.markdown(f"**{file.name}**")
+            if st.button("Preview", key=f"preview_{file.name}"):
+                st.session_state.selected_source = file.name
+                st.session_state.selected_page = 1
+                st.session_state.pdf_bytes[file.name] = file.read()
 
     if st.button("Process Documents"):
         if uploaded_files:
@@ -76,32 +116,65 @@ with st.sidebar:
             st.session_state.vectorstore = vectorstore
             st.success("Documents processed!")
 
-
 # ---------------- MAIN LAYOUT ----------------
 col1, col2 = st.columns([2, 1])
 
 # ---------------- CHAT AREA ----------------
 with col1:
-    question = st.text_input("Ask about your documents")
 
-    if question and st.session_state.vectorstore:
-        retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 4})
-        llm = ChatOpenAI(temperature=0)
+    # Show chat history
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            st.markdown(
+                f"<div class='user-bubble'>{msg['content']}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"<div class='assistant-bubble'>{msg['content']}</div>",
+                unsafe_allow_html=True
+            )
 
-        qa = RetrievalQA.from_chain_type(
-            llm=llm,
-            retriever=retriever,
-            return_source_documents=True
+    # Chat input
+    question = st.chat_input("Ask about your documents...")
+
+    if question:
+        st.session_state.messages.append(
+            {"role": "user", "content": question}
         )
 
-        result = qa(question)
+        if st.session_state.vectorstore:
+            retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 4})
+            llm = ChatOpenAI(temperature=0)
 
-        st.subheader("Answer")
-        st.write(result["result"])
+            qa = RetrievalQA.from_chain_type(
+                llm=llm,
+                retriever=retriever,
+                return_source_documents=True
+            )
 
+            result = qa(question)
+            answer = result["result"]
+
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer}
+            )
+
+            # Save sources
+            st.session_state.last_sources = result["source_documents"]
+
+        else:
+            answer = "Please process documents first."
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer}
+            )
+
+        st.rerun()
+
+    # Show sources under last answer
+    if "last_sources" in st.session_state:
         st.subheader("Sources")
-
-        for i, doc in enumerate(result["source_documents"]):
+        for i, doc in enumerate(st.session_state.last_sources):
             source = doc.metadata["source"]
             page = doc.metadata["page"]
             text = doc.page_content
@@ -112,14 +185,18 @@ with col1:
                 st.session_state.selected_source = source
                 st.session_state.selected_page = page
                 st.session_state.selected_text = text
-
-
+                st.rerun()
 
 # ---------------- SOURCE PREVIEW ----------------
 with col2:
     st.subheader("Source Preview")
 
     if st.session_state.selected_source:
+        if st.button("❌ Close Preview"):
+            st.session_state.selected_source = None
+            st.session_state.selected_page = None
+            st.rerun()
+
         source = st.session_state.selected_source
         page_num = st.session_state.selected_page
         source_text = st.session_state.get("selected_text", "")
@@ -127,10 +204,9 @@ with col2:
         if source in st.session_state.pdf_bytes:
             pdf_bytes = st.session_state.pdf_bytes[source]
             pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-
             page = pdf[page_num - 1]
 
-            # Highlight text if available
+            # Highlight
             if source_text:
                 areas = page.search_for(source_text[:200])
                 for area in areas:
@@ -140,10 +216,9 @@ with col2:
             pix = page.get_pixmap(dpi=150)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             st.image(img, use_column_width=True)
-
             st.caption(f"{source} — page {page_num}")
+
         else:
             st.warning("Source file not found.")
     else:
         st.info("Click a source to preview.")
-
