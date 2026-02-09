@@ -11,8 +11,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.retrieval import create_retrieval_chain
 
-# Load API key
-load_dotenv()
+import os
+import streamlit as st
+
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+
 
 st.set_page_config(page_title="RAG Chatbot", layout="wide")
 st.title("📄 AI PDF Chatbot")
@@ -40,8 +43,11 @@ if uploaded_file:
     vectorstore = FAISS.from_documents(docs, embeddings)
     retriever = vectorstore.as_retriever()
 
-    # LLM
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    api_key=OPENAI_API_KEY
+    )
+
 
     # Prompt
     prompt = ChatPromptTemplate.from_template(
