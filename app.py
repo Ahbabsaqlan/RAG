@@ -4,9 +4,17 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
 from langchain.schema import Document
 from PIL import Image
 import io
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Get key from either local .env or Streamlit secrets
+openai_api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
 
 st.set_page_config(
     page_title="AI Document Assistant",
@@ -110,7 +118,7 @@ with st.sidebar:
 
             chunks = splitter.split_documents(all_docs)
 
-            embeddings = OpenAIEmbeddings()
+            embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
             vectorstore = FAISS.from_documents(chunks, embeddings)
 
             st.session_state.vectorstore = vectorstore
@@ -147,10 +155,37 @@ with col1:
             retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 4})
             llm = ChatOpenAI(temperature=0)
 
+            template = """
+            You are an enterprise AI document assistant.
+
+            Answer the user's question using ONLY the provided context.
+
+            Rules:
+            - Be professional and concise.
+            - Structure the answer clearly.
+            - Use headings and bullet points when appropriate.
+            - If the question has multiple parts, answer them one by one.
+            - Do not invent information.
+
+            Context:
+            {context}
+
+            Question:
+            {question}
+
+            Professional Answer:
+            """
+
+            prompt = PromptTemplate(
+                template=template,
+                input_variables=["context", "question"]
+            )
+
             qa = RetrievalQA.from_chain_type(
                 llm=llm,
                 retriever=retriever,
-                return_source_documents=True
+                return_source_documents=True,
+                chain_type_kwargs={"prompt": prompt}
             )
 
             result = qa(question)
