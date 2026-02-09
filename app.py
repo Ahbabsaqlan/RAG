@@ -1,206 +1,138 @@
 import streamlit as st
-import tempfile
 import fitz  # PyMuPDF
-import base64
-
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import create_retrieval_chain
+from langchain.chains import RetrievalQA
+from langchain.schema import Document
+from PIL import Image
+import io
 
-# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="AI Document Assistant",
-    page_icon="📄",
-    layout="wide"
+    layout="wide",
+    page_icon="📄"
 )
+
+st.title("📄 AI Document Assistant")
 
 # ---------------- SESSION STATE ----------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
 
-if "retriever" not in st.session_state:
-    st.session_state.retriever = None
+if "pdf_bytes" not in st.session_state:
+    st.session_state.pdf_bytes = {}
 
-if "pdf_files" not in st.session_state:
-    st.session_state.pdf_files = {}
-
-if "selected_pdf" not in st.session_state:
-    st.session_state.selected_pdf = None
+if "selected_source" not in st.session_state:
+    st.session_state.selected_source = None
 
 if "selected_page" not in st.session_state:
-    st.session_state.selected_page = 0
+    st.session_state.selected_page = None
 
-# ---------------- API KEY ----------------
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-
-# ---------------- CUSTOM CSS (Professional UI) ----------------
-st.markdown("""
-<style>
-.main {
-    background-color: #0e1117;
-}
-.block-container {
-    padding-top: 2rem;
-}
-.chat-box {
-    background: #161a23;
-    padding: 20px;
-    border-radius: 12px;
-}
-.source-button button {
-    width: 100%;
-    text-align: left;
-}
-</style>
-""", unsafe_allow_html=True)
 
 # ---------------- SIDEBAR ----------------
-st.sidebar.title("📂 Documents")
+with st.sidebar:
+    st.header("📂 Documents")
 
-uploaded_files = st.sidebar.file_uploader(
-    "Upload PDF files",
-    type="pdf",
-    accept_multiple_files=True
-)
+    uploaded_files = st.file_uploader(
+        "Upload PDF files",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
 
-if st.sidebar.button("Process Documents") and uploaded_files:
-    with st.spinner("Processing documents..."):
-        docs = {}
-        pdf_storage = {}
+    if st.button("Process Documents"):
+        if uploaded_files:
+            all_docs = []
 
-        for uploaded_file in uploaded_files:
-            file_name = uploaded_file.name
-            file_bytes = uploaded_file.read()
+            for file in uploaded_files:
+                pdf_bytes = file.read()
+                st.session_state.pdf_bytes[file.name] = pdf_bytes
 
-            # Save bytes in session (IMPORTANT FIX)
-            pdf_storage[file_name] = file_bytes
+                pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-            # Write to temp file for LangChain
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(file_bytes)
-                tmp_path = tmp.name
+                for i, page in enumerate(pdf):
+                    text = page.get_text()
+                    if text.strip():
+                        all_docs.append(
+                            Document(
+                                page_content=text,
+                                metadata={
+                                    "source": file.name,
+                                    "page": i + 1
+                                }
+                            )
+                        )
 
-            loader = PyPDFLoader(tmp_path)
-            file_docs = loader.load()
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=150
+            )
 
-            for d in file_docs:
-                d.metadata["source"] = file_name
+            chunks = splitter.split_documents(all_docs)
 
-            docs.setdefault("all", []).extend(file_docs)
+            embeddings = OpenAIEmbeddings()
+            vectorstore = FAISS.from_documents(chunks, embeddings)
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,
-            chunk_overlap=100
-        )
-        splits = splitter.split_documents(docs["all"])
+            st.session_state.vectorstore = vectorstore
+            st.success("Documents processed!")
 
-        embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-
-        st.session_state.retriever = vectorstore.as_retriever()
-        st.session_state.pdf_files = pdf_storage
-
-        st.sidebar.success("Documents ready!")
 
 # ---------------- MAIN LAYOUT ----------------
-chat_col, viewer_col = st.columns([2, 1])
+col1, col2 = st.columns([2, 1])
 
-# ================= CHAT COLUMN =================
-with chat_col:
-    st.title("🤖 AI Document Assistant")
+# ---------------- CHAT AREA ----------------
+with col1:
+    question = st.text_input("Ask about your documents")
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    if question and st.session_state.vectorstore:
+        retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 4})
+        llm = ChatOpenAI(temperature=0)
 
-    if prompt := st.chat_input("Ask something about your documents..."):
-        st.chat_message("user").markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True
+        )
 
-        if not st.session_state.retriever:
-            response = "Please upload and process documents first."
+        result = qa(question)
+
+        st.subheader("Answer")
+        st.write(result["result"])
+
+        st.subheader("Sources")
+
+        for i, doc in enumerate(result["source_documents"]):
+            source = doc.metadata["source"]
+            page = doc.metadata["page"]
+
+            label = f"{source} — page {page}"
+
+            if st.button(label, key=f"src_{i}"):
+                st.session_state.selected_source = source
+                st.session_state.selected_page = page
+
+
+# ---------------- SOURCE PREVIEW ----------------
+with col2:
+    st.subheader("Source Preview")
+
+    if st.session_state.selected_source:
+        source = st.session_state.selected_source
+        page_num = st.session_state.selected_page
+
+        if source in st.session_state.pdf_bytes:
+            pdf_bytes = st.session_state.pdf_bytes[source]
+            pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+            page = pdf[page_num - 1]
+            pix = page.get_pixmap(dpi=150)
+
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            st.image(img, use_column_width=True)
+
+            st.caption(f"{source} — page {page_num}")
+
         else:
-            llm = ChatOpenAI(
-                model="gpt-4o-mini",
-                api_key=OPENAI_API_KEY,
-                temperature=0
-            )
-
-            prompt_template = ChatPromptTemplate.from_template(
-                """
-                Answer based only on the context.
-
-                Context:
-                {context}
-
-                Question:
-                {input}
-                """
-            )
-
-            document_chain = create_stuff_documents_chain(llm, prompt_template)
-            retrieval_chain = create_retrieval_chain(
-                st.session_state.retriever,
-                document_chain
-            )
-
-            result = retrieval_chain.invoke({"input": prompt})
-            answer = result["answer"]
-
-            sources = result.get("context", [])
-            source_blocks = []
-            seen = set()
-
-            if sources:
-                for doc in sources[:3]:
-                    filename = doc.metadata.get("source", "Document")
-                    page = doc.metadata.get("page", 0) + 1
-                    key = f"{filename}-{page}"
-
-                    if key not in seen:
-                        source_blocks.append((filename, page))
-                        seen.add(key)
-
-            if source_blocks:
-                st.markdown("### 📚 Sources")
-                for i, (fname, page) in enumerate(source_blocks):
-                    if st.button(f"📄 {fname} — Page {page}", key=f"src_{i}"):
-                        st.session_state.selected_pdf = fname
-                        st.session_state.selected_page = page - 1
-
-            response = answer
-
-        st.chat_message("assistant").markdown(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
-# ================= PDF VIEWER =================
-with viewer_col:
-    st.subheader("📄 Source Preview")
-
-    if st.session_state.selected_pdf:
-        file_name = st.session_state.selected_pdf
-        page_number = st.session_state.selected_page
-
-        if file_name in st.session_state.pdf_files:
-            file_bytes = st.session_state.pdf_files[file_name]
-
-            pdf = fitz.open(stream=file_bytes, filetype="pdf")
-            page = pdf.load_page(page_number)
-            pix = page.get_pixmap()
-            img_bytes = pix.tobytes("png")
-
-            st.image(img_bytes, use_container_width=True)
-
-            st.download_button(
-                "⬇ Download PDF",
-                data=file_bytes,
-                file_name=file_name
-            )
-        else:
-            st.info("Source file not found.")
+            st.warning("Source file not found.")
     else:
-        st.info("No source selected yet.")
+        st.info("Click a source to preview.")
