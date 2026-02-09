@@ -172,31 +172,37 @@ with viewer_col:
         pdf_path = st.session_state.pdf_files.get(selected_name)
 
         if pdf_path and os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
+            try:
+                doc = fitz.open(pdf_path)
+                page_index = st.session_state.selected_page
 
-            base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+                if page_index < len(doc):
+                    page = doc.load_page(page_index)
+                    pix = page.get_pixmap(dpi=150)
 
-            page = st.session_state.selected_page + 1
+                    img_bytes = pix.tobytes("png")
+                    st.image(img_bytes, use_container_width=True)
 
-            pdf_display = f"""
-                <iframe
-                    src="data:application/pdf;base64,{base64_pdf}#page={page}"
-                    width="100%"
-                    height="700"
-                    type="application/pdf">
-                </iframe>
-            """
+                    st.caption(
+                        f"{selected_name} — Page {page_index + 1} of {len(doc)}"
+                    )
 
-            st.markdown(pdf_display, unsafe_allow_html=True)
-            st.caption(f"{selected_name} — Page {page}")
+                    # Download button
+                    with open(pdf_path, "rb") as f:
+                        pdf_bytes = f.read()
 
-            st.download_button(
-                "⬇ Download PDF",
-                data=pdf_bytes,
-                file_name=selected_name
-            )
+                    st.download_button(
+                        "⬇ Download PDF",
+                        data=pdf_bytes,
+                        file_name=selected_name
+                    )
+                else:
+                    st.warning("Page not found in document.")
+
+            except Exception as e:
+                st.error(f"Preview error: {e}")
         else:
             st.info("Selected file not available.")
     else:
         st.info("Click a source to preview the document.")
+
