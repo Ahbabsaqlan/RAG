@@ -49,16 +49,18 @@ if process_button and uploaded_files:
         docs = []
 
         for uploaded_file in uploaded_files:
-            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            file_name = uploaded_file.name  # store original name
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(uploaded_file.read())
                 tmp_path = tmp_file.name
 
             loader = PyPDFLoader(tmp_path)
             file_docs = loader.load()
 
-            # Add filename to metadata
+            # Attach clean filename metadata
             for d in file_docs:
-                d.metadata["source"] = uploaded_file.name
+                d.metadata["source"] = file_name
 
             docs.extend(file_docs)
 
@@ -123,13 +125,15 @@ if prompt := st.chat_input("Ask a question about your documents..."):
 
             for doc in sources[:3]:
                 filename = doc.metadata.get("source", "Document")
-                page = doc.metadata.get("page", 0) + 1  # make page human-friendly
+                page = doc.metadata.get("page", 0) + 1
                 key = f"{filename}-{page}"
 
                 if key not in seen:
                     source_text += f"• **{filename}** — Page {page}\n"
                     seen.add(key)
+
             answer += source_text
+
 
 
         response = answer
